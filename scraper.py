@@ -34,7 +34,7 @@ locations = [
 def page_navigation(url):
     # Initialize the WebDriver
     driver = webdriver.Firefox(service=service, options=options)
-    business_links = []
+    business_dict = {}
 
     try:
         # Navigate to the URL
@@ -55,44 +55,33 @@ def page_navigation(url):
         for listing in business_listings:
             business_name = listing.find_element(By.XPATH, ".//h3/a").text
             business_link = listing.find_element(By.XPATH, ".//h3/a").get_attribute("href")
-            business_links.append(business_link)
+            business_dict[business_link] = {'name': business_name, 'url': business_link}
             logging.info(f"Business Name: {business_name}, Business Link: {business_link}")
 
     finally:
         # Close the WebDriver
         driver.quit()
 
-    return business_links
+    return business_dict
 
-def extract_business_info(html_content):
+def extract_business_info(html_content, business_info):
     """
     This function extracts business information from a Yelp website snippet
     using BeautifulSoup.
 
     Args:
         html_content (str): The HTML content of the Yelp website snippet.
+        business_info (dict): The dictionary containing business name and URL.
 
     Returns:
-        dict: A dictionary containing the extracted business information.
+        dict: A dictionary containing the updated business information.
     """
     soup = BeautifulSoup(html_content, 'html.parser')
 
-    info = {}
-
-    # Business Name
-    info['name'] = soup.find('h1').text.strip()
-
-    # Category
-    category_link = soup.find('a', href=lambda href: href and "find_desc" in href)
-    info['category'] = category_link.text.strip() if category_link else None
-
-    # Claimed Status
-    claimed_span = soup.find('span', aria_hidden="true")
-    info['claimed'] = claimed_span.find_next_sibling('span').text.strip() if claimed_span else None
-
-    # Closed Status
-    closed_span = soup.find('span', text='Closed')
-    info['closed'] = closed_span.find_next_sibling('span').text.strip() if closed_span else None
+    # Update business_info dictionary with additional details
+    business_info['category'] = soup.find('a', href=lambda href: href and "find_desc" in href).text.strip() if soup.find('a', href=lambda href: href and "find_desc" in href) else None
+    business_info['claimed'] = soup.find('span', aria_hidden="true").find_next_sibling('span').text.strip() if soup.find('span', aria_hidden="true") else None
+    business_info['closed'] = soup.find('span', text='Closed').find_next_sibling('span').text.strip() if soup.find('span', text='Closed') else None
 
     # Hours
     hours_table = soup.find('table', text=lambda text: text and "Location & Hours" in text)
@@ -101,46 +90,45 @@ def extract_business_info(html_content):
         hours = []
         for row in hours_table.find_all('td'):
             hours.extend([li.find('p').text.strip() for li in row.find_all('ul')])
-        info['hours'] = dict(zip(days, hours))
+        business_info['hours'] = dict(zip(days, hours))
     else:
-        info['hours'] = None
+        business_info['hours'] = None
 
     # Photos (assuming image source is in the src attribute)
-    photos = [img['src'] for img in soup.find_all('img', aria_label="Photos & videos")]
-    info['photos'] = photos
+    business_info['photos'] = [img['src'] for img in soup.find_all('img', aria_label="Photos & videos")]
 
     # Services Offered
     services_section = soup.find('section', aria_label="Services Offered")
     if services_section:
-        services = [a.text.strip() for a in services_section.find_all('a', href=lambda href: href and "find_desc" in href)]
-        info['services_offered'] = services
+        business_info['services_offered'] = [a.text.strip() for a in services_section.find_all('a', href=lambda href: href and "find_desc" in href)]
     else:
-        info['services_offered'] = None
+        business_info['services_offered'] = None
 
     # Description
     description_section = soup.find('section', aria_label="About the Business")
-    info['description'] = description_section.find('p').text.strip() if description_section else None
+    business_info['description'] = description_section.find('p').text.strip() if description_section else None
 
     # Address
     address_section = soup.find('address')
     if address_section:
         paragraphs = address_section.find_all('p')
-        info['street'] = paragraphs[0].text.strip()
+        business_info['street'] = paragraphs[0].text.strip()
         unit_index = paragraphs.index(paragraphs[0].find('span', text="Main Floor")) if paragraphs[0].find('span', text="Main Floor") else None
         if unit_index:
-            info['unit'] = paragraphs[unit_index + 1].text.strip()
+            business_info['unit'] = paragraphs[unit_index + 1].text.strip()
         else:
-            info['unit'] = None
+            business_info['unit'] = None
         if unit_index:
-            info['city_state_postal_code'] = paragraphs[unit_index + 2].text.strip()
+            business_info['city_state_postal_code'] = paragraphs[unit_index + 2].text.strip()
         else:
-            info['city_state_postal_code'] = paragraphs[1].text.strip()
-        info['country'] = paragraphs[-1].text.strip()
+            business_info['city_state_postal_code'] = paragraphs[1].text.strip()
+        business_info['country'] = paragraphs[-1].text.strip()
 
-    return info
+    return business_info
+
 
 def save_to_csv(data, filename='business_info.csv'):
-    with open(filename, mode='w', newline='') as file:
+    with open(filename, mode='a', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(['Name', 'Category', 'Claimed', 'Closed', 'Hours', 'Photos', 'Services Offered', 'Description', 'Street', 'Unit', 'City/State/Postal Code', 'Country'])
         for info in data:
@@ -150,19 +138,23 @@ def save_to_csv(data, filename='business_info.csv'):
                 info.get('street'), info.get('unit'), info.get('city_state_postal_code'), info.get('country')
             ])
 
-# Example usage
 all_business_info = []
-for category in categories:
-    for loc in locations:
-      url = f"https://www.yelp.com/search?find_desc=f{category}&find_loc={loc}"
-      business_links = page_navigation(url)
-      for link in business_links:
-          driver = webdriver.Firefox(service=service, options=options)
-          driver.get(link)
-          html_content = driver.page_source
-          business_info = extract_business_info(html_content)
-          all_business_info.append(business_info)
-          driver.quit()
+visited_links = set()
+for loc in locations:
+    url = f"https://www.yelp.com/search?find_desc=Community+Service%2FNon-Profit&find_loc={loc}"
+    business_dict = page_navigation(url)
+    for link, info in business_dict.items():
+        if link not in visited_links:
+            driver = webdriver.Firefox(service=service, options=options)
+            driver.get(link)
+            html_content = driver.page_source
+            business_info = extract_business_info(html_content, info)
+            all_business_info.append(business_info)
+            save_to_csv([business_info])
+            visited_links.add(link)
+            logging.info(f"Extracted and saved info for {info['name']}")
+            driver.quit()
+
 
 save_to_csv(all_business_info)
 
