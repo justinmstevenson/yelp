@@ -1,4 +1,5 @@
 import logging
+import os
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -7,6 +8,7 @@ from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.firefox.options import Options
 from bs4 import BeautifulSoup
 import csv
+from time import sleep
 
 # Configure logging
 logging.basicConfig(filename='download_log.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
@@ -14,7 +16,7 @@ logging.basicConfig(filename='download_log.log', level=logging.INFO, format='%(a
 TIMEOUT = 10  # Set your desired wait time in seconds
 
 options = Options()
-options.add_argument('--headless')
+#options.add_argument('--headless')
 service = FirefoxService('./geckodriver')
 options.set_preference('permissions.default.image', 2)
 
@@ -31,106 +33,146 @@ locations = [
     'Whitby%2C+ON', 'Kelowna%2C+BC', 'Kingston%2C+ON'
 ]
 
-def page_navigation(url):
-    # Initialize the WebDriver
-    driver = webdriver.Firefox(service=service, options=options)
-    business_dict = {}
+import time
+
+def page_navigation(driver, url):
+    business_links = []
 
     try:
         # Navigate to the URL
         driver.get(url)
+        logging.info(f"Navigated to {url}")
 
-        # Wait for the "Next Page" button to be present and click it if available
-        try:
-            next_button = WebDriverWait(driver, TIMEOUT).until(
-                EC.presence_of_element_located((By.XPATH, "//button[contains(text(), 'Next Page')]"))
-            )
-            next_button.click()
-        except:
-            logging.info("Next Page button not found or not clickable")
+        while True:
+            # Select every business listing that matches the provided structure
+            business_listings = driver.find_elements(By.XPATH, "//div[contains(@class, 'businessName__09f24__HG_pC')]")
 
-        # Select every business listing that matches the provided structure
-        business_listings = driver.find_elements(By.XPATH, "//div[contains(@class, 'businessName__09f24__HG_pC')]")
+            for listing in business_listings:
+                business_link = listing.find_element(By.XPATH, ".//h3/a").get_attribute("href")
+                business_links.append(business_link)
+                logging.info(f"Business Link: {business_link}")
 
-        for listing in business_listings:
-            business_name = listing.find_element(By.XPATH, ".//h3/a").text
-            business_link = listing.find_element(By.XPATH, ".//h3/a").get_attribute("href")
-            business_dict[business_link] = {'name': business_name, 'url': business_link}
-            logging.info(f"Business Name: {business_name}, Business Link: {business_link}")
+            # Wait for the "Next Page" button to be present and click it if available
+            try:
+                next_button_span = WebDriverWait(driver, TIMEOUT).until(
+                    EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'Next Page')]"))
+                )
+                logging.info("Next Page span found")
 
-    finally:
-        # Close the WebDriver
-        driver.quit()
+                # Gradually scroll to the bottom of the page over 1 second
+                #total_height = driver.execute_script("return document.body.scrollHeight")
+                #for _ in range(10):
+                #    driver.execute_script(f"window.scrollBy(0, {total_height / 10});")
+                #    time.sleep(0.1)
+                #logging.info("Gradually scrolled to the bottom of the page")
 
-    return business_dict
+                # Sleep for 1 second
+                #time.sleep(1)
 
-def extract_business_info(html_content, business_info):
+                # Find the parent button element
+                next_button = next_button_span.find_element(By.XPATH, "./ancestor::button")
+                if next_button.is_displayed() and next_button.is_enabled():
+                    # Perform a JavaScript click on the button
+                    driver.execute_script("arguments[0].click();", next_button)
+                    logging.info("Next Page button clicked via JavaScript")
+
+                    # Wait for the next page to load
+                    time.sleep(2)
+                else:
+                    logging.info("Next Page button is not clickable")
+                    break
+            except Exception as e:
+                logging.info("No more pages to navigate")
+                break
+
+    except Exception as e:
+        logging.error(f"Error in page_navigation: {e}")
+
+    return business_links
+
+
+
+def extract_business_info(driver, url):
     """
     This function extracts business information from a Yelp website snippet
     using BeautifulSoup.
 
     Args:
-        html_content (str): The HTML content of the Yelp website snippet.
-        business_info (dict): The dictionary containing business name and URL.
+        driver (WebDriver): The Selenium WebDriver instance.
+        url (str): The URL of the business page.
 
     Returns:
-        dict: A dictionary containing the updated business information.
+        dict: A dictionary containing the extracted business information.
     """
+    driver.get(url)
+    html_content = driver.page_source
     soup = BeautifulSoup(html_content, 'html.parser')
 
-    # Update business_info dictionary with additional details
-    business_info['category'] = soup.find('a', href=lambda href: href and "find_desc" in href).text.strip() if soup.find('a', href=lambda href: href and "find_desc" in href) else None
-    business_info['claimed'] = soup.find('span', aria_hidden="true").find_next_sibling('span').text.strip() if soup.find('span', aria_hidden="true") else None
-    business_info['closed'] = soup.find('span', text='Closed').find_next_sibling('span').text.strip() if soup.find('span', text='Closed') else None
+    info = {'url': url}
+
+    # Business Name
+    info['name'] = soup.find('h1').text.strip()
+
+    # Category
+    category_link = soup.find('a', href=lambda href: href and "find_desc" in href)
+    info['category'] = category_link.text.strip() if category_link else None
+
+    # Claimed Status
+    claimed_span = soup.find('span', aria_hidden="true")
+    info['claimed'] = claimed_span.find_next_sibling('span').text.strip() if claimed_span else None
+
+    # Closed Status
+    info['closed'] = soup.find('span', string='Closed').find_next_sibling('span').text.strip() if soup.find('span', string='Closed') else None
 
     # Hours
-    hours_table = soup.find('table', text=lambda text: text and "Location & Hours" in text)
+    hours_table = soup.find('table', string=lambda string: string and "Location & Hours" in string)
     if hours_table:
         days = [th.find('p').text.strip() for th in hours_table.find_all('th')]
         hours = []
         for row in hours_table.find_all('td'):
             hours.extend([li.find('p').text.strip() for li in row.find_all('ul')])
-        business_info['hours'] = dict(zip(days, hours))
+        info['hours'] = dict(zip(days, hours))
     else:
-        business_info['hours'] = None
+        info['hours'] = None
 
     # Photos (assuming image source is in the src attribute)
-    business_info['photos'] = [img['src'] for img in soup.find_all('img', aria_label="Photos & videos")]
+    info['photos'] = [img['src'] for img in soup.find_all('img', aria_label="Photos & videos")]
 
     # Services Offered
     services_section = soup.find('section', aria_label="Services Offered")
     if services_section:
-        business_info['services_offered'] = [a.text.strip() for a in services_section.find_all('a', href=lambda href: href and "find_desc" in href)]
+        info['services_offered'] = [a.text.strip() for a in services_section.find_all('a', href=lambda href: href and "find_desc" in href)]
     else:
-        business_info['services_offered'] = None
+        info['services_offered'] = None
 
     # Description
     description_section = soup.find('section', aria_label="About the Business")
-    business_info['description'] = description_section.find('p').text.strip() if description_section else None
+    info['description'] = description_section.find('p').text.strip() if description_section else None
 
     # Address
     address_section = soup.find('address')
     if address_section:
         paragraphs = address_section.find_all('p')
-        business_info['street'] = paragraphs[0].text.strip()
-        unit_index = paragraphs.index(paragraphs[0].find('span', text="Main Floor")) if paragraphs[0].find('span', text="Main Floor") else None
+        info['street'] = paragraphs[0].text.strip()
+        unit_index = paragraphs.index(paragraphs[0].find('span', string="Main Floor")) if paragraphs[0].find('span', string="Main Floor") else None
         if unit_index:
-            business_info['unit'] = paragraphs[unit_index + 1].text.strip()
+            info['unit'] = paragraphs[unit_index + 1].text.strip()
         else:
-            business_info['unit'] = None
+            info['unit'] = None
         if unit_index:
-            business_info['city_state_postal_code'] = paragraphs[unit_index + 2].text.strip()
+            info['city_state_postal_code'] = paragraphs[unit_index + 2].text.strip()
         else:
-            business_info['city_state_postal_code'] = paragraphs[1].text.strip()
-        business_info['country'] = paragraphs[-1].text.strip()
+            info['city_state_postal_code'] = paragraphs[1].text.strip()
+        info['country'] = paragraphs[-1].text.strip()
 
-    return business_info
-
+    return info
 
 def save_to_csv(data, filename='business_info.csv'):
+    file_exists = os.path.isfile(filename)
     with open(filename, mode='a', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(['Name', 'Category', 'Claimed', 'Closed', 'Hours', 'Photos', 'Services Offered', 'Description', 'Street', 'Unit', 'City/State/Postal Code', 'Country'])
+        if not file_exists:
+            writer.writerow(['Name', 'Category', 'Claimed', 'Closed', 'Hours', 'Photos', 'Services Offered', 'Description', 'Street', 'Unit', 'City/State/Postal Code', 'Country'])
         for info in data:
             writer.writerow([
                 info.get('name'), info.get('category'), info.get('claimed'), info.get('closed'),
@@ -138,26 +180,31 @@ def save_to_csv(data, filename='business_info.csv'):
                 info.get('street'), info.get('unit'), info.get('city_state_postal_code'), info.get('country')
             ])
 
+# Example usage
 all_business_info = []
 visited_links = set()
-for loc in locations:
-    url = f"https://www.yelp.com/search?find_desc=Community+Service%2FNon-Profit&find_loc={loc}"
-    business_dict = page_navigation(url)
-    for link, info in business_dict.items():
+driver = webdriver.Firefox(service=service, options=options)
+
+try:
+    # Step 1: Extract all business URLs
+    all_business_links = []
+    for loc in locations:
+        url = f"https://www.yelp.com/search?find_desc=Community+Service%2FNon-Profit&find_loc={loc}"
+        business_links = page_navigation(driver, url)
+        all_business_links.extend(business_links)
+
+    # Step 2: Extract detailed information for each business
+    for link in all_business_links:
         if link not in visited_links:
-            driver = webdriver.Firefox(service=service, options=options)
-            driver.get(link)
-            html_content = driver.page_source
-            business_info = extract_business_info(html_content, info)
+            business_info = extract_business_info(driver, link)
             all_business_info.append(business_info)
             save_to_csv([business_info])
             visited_links.add(link)
-            logging.info(f"Extracted and saved info for {info['name']}")
-            driver.quit()
-
+            logging.info(f"Extracted and saved info for {business_info['name']}")
+finally:
+    driver.quit()
 
 save_to_csv(all_business_info)
-
 
 #url1 = "https://www.yelp.com/search?find_desc=Community+Service%2FNon-Profit&find_loc=Toronto%2C+ON"
 #url2 = "https://www.yelp.com/biz/the-second-chance-foundation-toronto-3?osq=Community+Service%2FNon-Profit&override_cta=Request+information"
