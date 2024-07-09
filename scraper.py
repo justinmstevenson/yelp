@@ -1,3 +1,4 @@
+from pprint import pprint
 import logging
 import os
 from selenium import webdriver
@@ -90,12 +91,9 @@ def page_navigation(driver, url):
 
     return business_links
 
-
-
 def extract_business_info(driver, url):
     """
-    This function extracts business information from a Yelp website snippet
-    using BeautifulSoup.
+    This function extracts business information from a Yelp website using Selenium.
 
     Args:
         driver (WebDriver): The Selenium WebDriver instance.
@@ -105,65 +103,127 @@ def extract_business_info(driver, url):
         dict: A dictionary containing the extracted business information.
     """
     driver.get(url)
-    html_content = driver.page_source
-    soup = BeautifulSoup(html_content, 'html.parser')
-
+    WebDriverWait(driver, 2).until(EC.presence_of_all_elements_located((By.TAG_NAME, 'body')))
+    sleep(1)
     info = {'url': url}
 
     # Business Name
-    info['name'] = soup.find('h1').text.strip()
+    try:
+        info['name'] = driver.find_element(By.TAG_NAME, 'h1').text.strip()
+    except Exception as e:
+        info['name'] = None
 
     # Category
-    category_link = soup.find('a', href=lambda href: href and "find_desc" in href)
-    info['category'] = category_link.text.strip() if category_link else None
+    try:
+        category_link = driver.find_element(By.XPATH, "//a[contains(@href, 'find_desc')]")
+        info['category'] = category_link.text.strip()
+    except Exception as e:
+        info['category'] = None
 
     # Claimed Status
-    claimed_span = soup.find('span', aria_hidden="true")
-    info['claimed'] = claimed_span.find_next_sibling('span').text.strip() if claimed_span else None
+    try:
+        claimed_span = driver.find_element(By.XPATH, "//span[@aria-hidden='true']")
+        info['claimed'] = claimed_span.find_element(By.XPATH, "following-sibling::span").text.strip()
+    except Exception as e:
+        info['claimed'] = None
 
     # Closed Status
-    info['closed'] = soup.find('span', string='Closed').find_next_sibling('span').text.strip() if soup.find('span', string='Closed') else None
+    try:
+        closed_span = driver.find_element(By.XPATH, "//span[contains(text(), 'Closed')]")
+        info['closed'] = closed_span.find_element(By.XPATH, "following-sibling::span").text.strip()
+    except Exception as e:
+        info['closed'] = None
 
     # Hours
-    hours_table = soup.find('table', string=lambda string: string and "Location & Hours" in string)
-    if hours_table:
-        days = [th.find('p').text.strip() for th in hours_table.find_all('th')]
+    try:
+        hours_table = driver.find_element(By.XPATH, "//table[contains(text(), 'Location & Hours')]")
+        days = [th.find_element(By.TAG_NAME, 'p').text.strip() for th in hours_table.find_elements(By.TAG_NAME, 'th')]
         hours = []
-        for row in hours_table.find_all('td'):
-            hours.extend([li.find('p').text.strip() for li in row.find_all('ul')])
+        for row in hours_table.find_elements(By.TAG_NAME, 'td'):
+            hours.extend([li.find_element(By.TAG_NAME, 'p').text.strip() for li in row.find_elements(By.TAG_NAME, 'ul')])
         info['hours'] = dict(zip(days, hours))
-    else:
+    except Exception as e:
         info['hours'] = None
 
-    # Photos (assuming image source is in the src attribute)
-    info['photos'] = [img['src'] for img in soup.find_all('img', aria_label="Photos & videos")]
+    # Photos
+    try:
+        photos = [img.get_attribute('src') for img in driver.find_elements(By.XPATH, "//img[@aria-label='Photos & videos']")]
+        info['photos'] = photos
+    except Exception as e:
+        info['photos'] = None
 
     # Services Offered
-    services_section = soup.find('section', aria_label="Services Offered")
-    if services_section:
-        info['services_offered'] = [a.text.strip() for a in services_section.find_all('a', href=lambda href: href and "find_desc" in href)]
-    else:
+    try:
+        services_section = driver.find_element(By.XPATH, "//section[@aria-label='Services Offered']")
+        services = [a.text.strip() for a in services_section.find_elements(By.XPATH, ".//a[contains(@href, 'find_desc')]")]
+        info['services_offered'] = services
+    except Exception as e:
         info['services_offered'] = None
 
     # Description
-    description_section = soup.find('section', aria_label="About the Business")
-    info['description'] = description_section.find('p').text.strip() if description_section else None
-
+    try:
+        description_section = driver.find_element(By.XPATH, "//section[@aria-label='About the Business']")
+        info['description'] = description_section.find_element(By.TAG_NAME, 'p').text.strip()
+    except Exception as e:
+        info['description'] = None
+    # Reviews
+    try:
+        reviews_tag = driver.find_element(By.XPATH, "//a[contains(@href, '#reviews')]")
+        reviews_rating = reviews_tag.find_element(By.XPATH, "preceding-sibling::span").text.strip()
+        info['reviews'] = float(reviews_rating)
+    except Exception as e:
+        info['reviews'] = None
     # Address
-    address_section = soup.find('address')
-    if address_section:
-        paragraphs = address_section.find_all('p')
+    try:
+        address_section = driver.find_element(By.TAG_NAME, 'address')
+        paragraphs = address_section.find_elements(By.TAG_NAME, 'p')
         info['street'] = paragraphs[0].text.strip()
-        unit_index = paragraphs.index(paragraphs[0].find('span', string="Main Floor")) if paragraphs[0].find('span', string="Main Floor") else None
-        if unit_index:
+        unit_index = next((i for i, p in enumerate(paragraphs) if "Main Floor" in p.text), None)
+        if unit_index is not None:
             info['unit'] = paragraphs[unit_index + 1].text.strip()
-        else:
-            info['unit'] = None
-        if unit_index:
             info['city_state_postal_code'] = paragraphs[unit_index + 2].text.strip()
         else:
+            info['unit'] = None
             info['city_state_postal_code'] = paragraphs[1].text.strip()
-        info['country'] = paragraphs[-1].text.strip()
+    except Exception as e:
+        info['street'] = None
+        info['unit'] = None
+        info['city_state_postal_code'] = None
+
+    # Business Website
+    try:
+        # Find all 'a' tags
+        print("Finding all 'a' tags...")
+        all_links = driver.find_elements(By.TAG_NAME, 'a')
+        print(f"Total 'a' tags found: {len(all_links)}")
+        
+        # Filter for the first occurring '/biz_redir' URL
+        print("Filtering for the first occurring '/biz_redir' URL...")
+        website_link = next((link.get_attribute('href') for link in all_links if link.get_attribute('href') and '/biz_redir?url=' in link.get_attribute('href')), None)
+        
+        if website_link:
+            print(f"Website link found: {website_link}")
+            # Extract the actual URL from the href attribute
+            website_url = website_link.split('url=')[1].split('&')[0]
+            website_url = website_url.replace('%3A', ':').replace('%2F', '/')
+            info['website'] = website_url
+            print(f"Extracted website URL: {website_url}")
+        else:
+            info['website'] = None
+            print("No website link found.")
+    except Exception as e:
+        info['website'] = None
+        print(f"Error extracting website: {e}")
+        logging.error(f"Error extracting website: {e}")
+
+
+    # Phone Number
+    try:
+        phone_tag = driver.find_element(By.XPATH, "//p[contains(text(), 'Phone number')]")
+        phone_number = phone_tag.find_element(By.XPATH, "following-sibling::p").text.strip()
+        info['phone_number'] = phone_number
+    except Exception as e:
+        info['phone_number'] = None
 
     return info
 
@@ -172,12 +232,17 @@ def save_to_csv(data, filename='business_info.csv'):
     with open(filename, mode='a', newline='') as file:
         writer = csv.writer(file)
         if not file_exists:
-            writer.writerow(['Name', 'Category', 'Claimed', 'Closed', 'Hours', 'Photos', 'Services Offered', 'Description', 'Street', 'Unit', 'City/State/Postal Code', 'Country'])
+            writer.writerow([
+                'Name', 'Category', 'Claimed', 'Closed', 'Hours', 'Photos', 'Services Offered', 
+                'Description', 'Street', 'Unit', 'City/State/Postal Code', 'Country', 
+                'Website', 'Phone Number', 'Reviews'
+            ])
         for info in data:
             writer.writerow([
                 info.get('name'), info.get('category'), info.get('claimed'), info.get('closed'),
                 info.get('hours'), info.get('photos'), info.get('services_offered'), info.get('description'),
-                info.get('street'), info.get('unit'), info.get('city_state_postal_code'), info.get('country')
+                info.get('street'), info.get('unit'), info.get('city_state_postal_code'), info.get('country'),
+                info.get('website'), info.get('phone_number'), info.get('reviews')
             ])
 
 # Example usage
@@ -187,16 +252,19 @@ driver = webdriver.Firefox(service=service, options=options)
 
 try:
     # Step 1: Extract all business URLs
-    all_business_links = []
-    for loc in locations:
-        url = f"https://www.yelp.com/search?find_desc=Community+Service%2FNon-Profit&find_loc={loc}"
-        business_links = page_navigation(driver, url)
-        all_business_links.extend(business_links)
+    #all_business_links = []
+    with open('biz_urls.txt', 'r') as file:
+      all_business_links = [line.strip() for line in file]
+    #for loc in locations:
+    #    url = f"https://www.yelp.com/search?find_desc=Community+Service%2FNon-Profit&find_loc={loc}"
+    #    business_links = page_navigation(driver, url)
+    #    all_business_links.extend(business_links)
 
     # Step 2: Extract detailed information for each business
     for link in all_business_links:
         if link not in visited_links:
             business_info = extract_business_info(driver, link)
+            pprint(business_info)
             all_business_info.append(business_info)
             save_to_csv([business_info])
             visited_links.add(link)

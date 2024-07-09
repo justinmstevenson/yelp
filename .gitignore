@@ -162,3 +162,5 @@ cython_debug/
 #.idea/
 business_info.csv
 geckodriver
+biz_urls.txt
+urls.py
